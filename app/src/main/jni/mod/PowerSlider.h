@@ -1,0 +1,174 @@
+
+
+#pragma once
+
+#include "include/input.h"
+
+extern struct Candidate;
+extern Candidate g_CurrentCandidate;
+
+#define ifl(cond) if ([&](){ bool b = (cond); if (b) LOGI(#cond); return b; }())
+
+extern Point2D lastFailedCuePos;
+
+extern bool IsShotValid();
+
+struct PowerSlider {
+    bool Active = false;
+    float ElapsedTime = 0.f, Duration = 0.f;
+    float HoldTime = 0.f, HoldDuration = 0.f;
+    ImVec2 StartPos;
+    ImVec2 EndPos;
+    ImVec2 TargetPos;
+    ImVec2 CurrentPos;
+
+    float ShotPower = 666.0f;
+    int TouchIndex = 10;
+
+    enum State {
+        IDLE,
+        STARTING,
+        MOVING,
+        ENDING,
+        RETURNING,
+    } state = IDLE;
+
+    void Start(ImVec2 start, ImVec2 end) {
+        this->StartPos = start;
+        this->EndPos = end;
+        this->CurrentPos = this->StartPos;
+        this->ElapsedTime = 0.f;
+        this->HoldTime = 0.f;
+
+        this->Active = true;
+        this->state = STARTING;
+    }
+
+    void Start(ImVec4 Rect) {
+        float center = Rect.x + Rect.z / 2.0f;
+        Start(ImVec2(center, Rect.y), ImVec2(center, Rect.y + Rect.w));
+    }
+
+    void End() {
+        LOGI("ending at power %f", (g_cgs.aimValid ? g_cgs.aimPower : 0.0));
+        NativeTouchesEnd(this->TouchIndex, this->CurrentPos.x, this->CurrentPos.y);
+        this->Active = false;
+        this->state = IDLE;
+        g_CurrentCandidate.idx = -1;
+    }
+
+    void Cancel() {
+        LOGI("Canceling power slider at power %f", (g_cgs.aimValid ? g_cgs.aimPower : 0.0));
+
+        this->EndPos = this->CurrentPos;
+        this->TargetPos = this->StartPos;
+        this->ElapsedTime = 0.f;
+        this->HoldTime = 0.f;
+        this->Duration = 0.3f;
+        this->state = RETURNING;
+
+        g_CurrentCandidate.idx = -1;
+        lastFailedCuePos = { -1000.0, -1000.0 };
+
+    }
+
+    void SimulateDrag(ImVec4 Rect, float ShotPower = 0.f, float DragTime = .7f, float HoldTime = 0.35f) {
+        if (this->Active) return;
+
+        ShotPower = 666.f;
+        this->ShotPower = ShotPower > 0.f ? ShotPower : 666.0f;
+        float powerRatio = std::min(this->ShotPower / 666.0f, 1.0f);
+
+        Start(Rect);
+
+        this->TargetPos = ImVec2(
+            this->StartPos.x + (this->EndPos.x - this->StartPos.x) * powerRatio,
+            this->StartPos.y + (this->EndPos.y - this->StartPos.y) * powerRatio
+        );
+
+        this->Duration = DragTime * powerRatio;
+        this->HoldDuration = HoldTime;
+    }
+
+    void Update() {
+        if (!this->Active) return;
+
+        float dt = ImGui::GetIO().DeltaTime;
+
+        if (this->state == STARTING) {
+            this->HoldTime += dt;
+            if (this->HoldTime >= this->HoldDuration * 2.f) {
+                NativeTouchesBegin(this->TouchIndex, this->StartPos.x, this->StartPos.y);
+                this->state = MOVING;
+                this->HoldTime = 0.f;
+            }
+        }
+
+        if (this->state == MOVING) {
+            this->ElapsedTime += dt;
+
+            if (this->ElapsedTime < this->Duration) {
+
+                float t = this->ElapsedTime / this->Duration;
+                this->CurrentPos = ImVec2(
+                    this->StartPos.x + (this->TargetPos.x - this->StartPos.x) * t,
+                    this->StartPos.y + (this->TargetPos.y - this->StartPos.y) * t
+                );
+
+                NativeTouchesMove(this->TouchIndex, this->CurrentPos.x, this->CurrentPos.y);
+            } else {
+                return Cancel();
+
+                this->CurrentPos = this->TargetPos;
+                NativeTouchesMove(this->TouchIndex, this->CurrentPos.x, this->CurrentPos.y);
+                this->state = ENDING;
+            }
+
+            if (dynamic_bool["DebugTouch"]) {
+                ImDrawList* fg = ImGui::GetForegroundDrawList();
+                fg->AddCircleFilled(this->CurrentPos, 15.0f, IM_COL32(255, 255, 255, 100));
+                fg->AddCircle(this->CurrentPos, 15.0f, IM_COL32(255, 255, 255, 200), 0.0f, 2.0f);
+            }
+        }
+
+        if (this->state == ENDING) {
+            this->HoldTime += dt;
+            if (this->HoldTime >= this->HoldDuration) {
+                if (IsShotValid()) {
+                    this->End();
+                } else {
+                    LOGI("Shot invalid before release. Canceling.");
+                    this->Cancel();
+                }
+            }
+        }
+
+        if (this->state == RETURNING) {
+            this->ElapsedTime += dt;
+
+            if (this->ElapsedTime < this->Duration) {
+                float t = this->ElapsedTime / this->Duration;
+
+                this->CurrentPos = ImVec2(
+                    this->EndPos.x + (this->TargetPos.x - this->EndPos.x) * t,
+                    this->EndPos.y + (this->TargetPos.y - this->EndPos.y) * t
+                );
+                NativeTouchesMove(this->TouchIndex, this->CurrentPos.x, this->CurrentPos.y);
+            } else {
+
+                this->CurrentPos = this->TargetPos;
+                NativeTouchesMove(this->TouchIndex, this->CurrentPos.x, this->CurrentPos.y);
+                End();
+            }
+
+            if (dynamic_bool["DebugTouch"]) {
+                ImDrawList* fg = ImGui::GetForegroundDrawList();
+                fg->AddCircleFilled(this->CurrentPos, 15.0f, IM_COL32(255, 255, 255, 100));
+                fg->AddCircle(this->CurrentPos, 15.0f, IM_COL32(255, 255, 255, 200), 0.0f, 2.0f);
+            }
+        }
+
+    }
+};
+
+PowerSlider powerSlider;
